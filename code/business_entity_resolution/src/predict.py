@@ -282,8 +282,7 @@ def run_test_prediction(
                     w_out.writerow([orig_idx, s1_id, "", ""])
                     continue
 
-                matched_cands = []
-                target_batch = store.get_records_batch(cands_set)
+                matched_cands_with_probs = []
 
                 if clf is not None:
                     feat_matrix = []
@@ -303,24 +302,25 @@ def run_test_prediction(
                         for cid, p in zip(valid_cand_ids, probs):
                             if cid.startswith("S2-"):
                                 if p >= tau_s2:
-                                    matched_cands.append(cid)
+                                    matched_cands_with_probs.append((cid, float(p)))
                             else:
                                 if p >= tau_s3:
-                                    matched_cands.append(cid)
+                                    matched_cands_with_probs.append((cid, float(p)))
                 else:
                     for cid in cands_set:
                         cand_rec = target_batch.get(cid)
                         if cand_rec and cand_rec["name_normalized"] == s1_norm["name_normalized"]:
-                            matched_cands.append(cid)
+                            matched_cands_with_probs.append((cid, 1.0))
 
                 # Confidence-based post-filter for hub entities:
                 # If too many matches and none are high-confidence, keep only top by probability
-                if len(matched_cands) > 8 and matched_probs:
-                    max_prob = max(matched_probs)
+                if len(matched_cands_with_probs) > 8:
+                    max_prob = max(p for _, p in matched_cands_with_probs)
                     if max_prob < 0.75:
-                        # Sort by probability descending, keep top 5
-                        scored = sorted(zip(matched_cands, matched_probs), key=lambda x: x[1], reverse=True)
-                        matched_cands = [cid for cid, _ in scored[:5]]
+                        matched_cands_with_probs.sort(key=lambda x: x[1], reverse=True)
+                        matched_cands_with_probs = matched_cands_with_probs[:5]
+
+                matched_cands = [cid for cid, _ in matched_cands_with_probs]
 
                 matched_set = sorted(set(matched_cands))
                 matched_set = [m for m in matched_set if m in cands_set]
