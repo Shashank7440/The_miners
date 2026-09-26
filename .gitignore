@@ -1,0 +1,15 @@
+# Ignore datasets, outputs, and cache files
+student_resource/dataset/
+dataset/
+output/
+hpcdoenresult/
+*.tsv
+*.csv
+*.db
+*.log
+*.pkl
+__pycache__/
+.DS_Store
+.idea/
+.vscode/
+scratch/

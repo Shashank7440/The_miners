@@ -1,0 +1,34 @@
+#!/bin/bash
+#PBS -N amazon_ml_pipeline
+#PBS -q workq
+#PBS -l select=1:ncpus=8:mem=32gb
+#PBS -l walltime=24:00:00
+#PBS -o pipeline_output.log
+#PBS -e pipeline_error.log
+
+cd "/Data4/mi_25026207/TH_EEGformer/Amazon ml/student_resource"
+
+source /apps/compilers/anaconda3/etc/profile.d/conda.sh
+conda activate eegformer
+
+echo "=============================================="
+echo "Amazon ML Pipeline - Business Entity Resolution"
+echo "Job ID: $PBS_JOBID"
+echo "Node: $(hostname)"
+echo "Start: $(date)"
+echo "=============================================="
+
+# Limit threads to prevent LightGBM from exceeding PBS allocated CPUs (8)
+export OMP_NUM_THREADS=8
+export OPENBLAS_NUM_THREADS=8
+export MKL_NUM_THREADS=8
+export VECLIB_MAXIMUM_THREADS=8
+export NUMEXPR_NUM_THREADS=8
+export PYTHONUNBUFFERED=1
+
+# Run FULL pipeline and write real-time log
+python -u code/business_entity_resolution/src/run_pipeline.py --all --hpc 2>&1 | tee live_pipeline.log
+
+echo "=============================================="
+echo "Finished: $(date)"
+echo "=============================================="
