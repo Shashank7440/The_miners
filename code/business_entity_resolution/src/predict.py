@@ -128,16 +128,14 @@ def run_test_prediction(
     else:
         print(f"WARNING: Model file {model_path} not found. Running rule-baseline.", flush=True)
 
-    tau = DEFAULT_F05_THRESHOLD
-    use_rules = False
-    strategy = "top1_per_source"
+    tau_s2 = 0.80
+    tau_s3 = 0.80
     if threshold_config_path.exists():
         with open(threshold_config_path, "r", encoding="utf-8") as f:
             t_conf = json.load(f)
-            tau = t_conf.get("best_threshold", DEFAULT_F05_THRESHOLD)
-            use_rules = t_conf.get("use_rules", False)
-            strategy = t_conf.get("best_strategy", "top1_per_source")
-        print(f"Loaded calibrated threshold: tau = {tau:.2f} (rules active: {use_rules}, strategy: {strategy})", flush=True)
+            tau_s2 = t_conf.get("best_threshold_s2", t_conf.get("best_threshold", 0.80))
+            tau_s3 = t_conf.get("best_threshold_s3", t_conf.get("best_threshold", 0.80))
+        print(f"Loaded calibrated thresholds: tau_s2 = {tau_s2:.2f}, tau_s3 = {tau_s3:.2f}", flush=True)
 
     # 2. Partition S1 entities by country into temp files to preserve line indices
     s1_path = test_dir / "test_source1.tsv"
@@ -191,7 +189,7 @@ def run_test_prediction(
         if cnt > 0:
             print(f"  - {c}: {cnt:,} entities")
 
-    # 3. Process Country-by-Country (Index Targets -> Score S1 Candidates -> Write Part Output)
+    # 3. Process Country-by-Country with Separate Source 2 and Source 3 Blockers
     active_countries = [c for c in countries + ["Other"] if country_counts.get(c, 0) > 0]
     total_matches_global = 0
     total_candidates_global = 0
@@ -201,11 +199,12 @@ def run_test_prediction(
         print(f"Processing Country Partition: {country} ({country_counts[country]:,} entities)", flush=True)
         print(f"==================================================", flush=True)
 
-        blocker = MultiPassBlocker()
+        blocker_s2 = MultiPassBlocker(max_candidates_per_s1=50)
+        blocker_s3 = MultiPassBlocker(max_candidates_per_s1=50)
         store = RecordStore(in_memory=in_memory, db_path=tmp_dir / f"store_{country}.db")
 
-        # Index target records for this country only
-        for fname in ["test_source2.tsv", "test_source3.tsv"]:
+        # Index target records into separate blockers
+        for fname, blocker_inst in [("test_source2.tsv", blocker_s2), ("test_source3.tsv", blocker_s3)]:
             t_path = test_dir / fname
             if not t_path.exists():
                 continue
@@ -233,7 +232,7 @@ def run_test_prediction(
                     }
                     norm = normalize_record(rec)
                     batch.append(norm)
-                    blocker._index_single_record(norm)
+                    blocker_inst._index_single_record(norm)
 
                     if len(batch) >= 20_000:
                         store.add_records_batch(batch)
@@ -273,8 +272,9 @@ def run_test_prediction(
                 s1_norm = normalize_record(s1_raw)
                 c_s1_done += 1
 
-                cands = blocker.retrieve_candidates_for_s1(s1_norm)
-                cands_set = sorted(set(cands))
+                cands_s2 = blocker_s2.retrieve_candidates_for_s1(s1_norm)
+                cands_s3 = blocker_s3.retrieve_candidates_for_s1(s1_norm)
+                cands_set = sorted(set(cands_s2) | set(cands_s3))
                 cands_str = ",".join(cands_set) if cands_set else ""
                 total_candidates_global += len(cands_set)
 
@@ -283,14 +283,11 @@ def run_test_prediction(
                     continue
 
                 matched_cands = []
-                matched_probs = []
                 target_batch = store.get_records_batch(cands_set)
 
                 if clf is not None:
                     feat_matrix = []
                     valid_cand_ids = []
-                    rule_pos_list = []
-                    rule_neg_list = []
 
                     for rank, cid in enumerate(cands_set, 1):
                         cand_rec = target_batch.get(cid)
@@ -300,58 +297,16 @@ def run_test_prediction(
                         feat_vector = [feats[name] for name in feat_names]
                         feat_matrix.append(feat_vector)
                         valid_cand_ids.append(cid)
-                        rule_pos_list.append(feats["rule_strong_positive"])
-                        rule_neg_list.append(feats["rule_strong_conflict"])
 
                     if feat_matrix:
                         probs = clf.predict_proba(np.array(feat_matrix, dtype=np.float32))[:, 1]
-                        s2_scored = []
-                        s3_scored = []
-
-                        for cid, p, r_pos, r_neg in zip(valid_cand_ids, probs, rule_pos_list, rule_neg_list):
-                            eff_p = p
-                            if use_rules:
-                                if r_neg > 0:
-                                    eff_p *= 0.60
-                                if r_pos > 0:
-                                    eff_p = max(eff_p, 0.95)
-
-                            if eff_p >= tau:
-                                if cid.startswith("S2-"):
-                                    s2_scored.append((cid, eff_p))
-                                else:
-                                    s3_scored.append((cid, eff_p))
-
-                        # Sort descending by probability
-                        s2_scored.sort(key=lambda x: x[1], reverse=True)
-                        s3_scored.sort(key=lambda x: x[1], reverse=True)
-
-                        if strategy == "top_dynamic":
-                            if s2_scored:
-                                top_p = s2_scored[0][1]
-                                for cid, p in s2_scored:
-                                    if p >= top_p - 0.12:
-                                        matched_cands.append(cid)
-                            if s3_scored:
-                                top_p = s3_scored[0][1]
-                                for cid, p in s3_scored:
-                                    if p >= top_p - 0.12:
-                                        matched_cands.append(cid)
-                        elif strategy == "top1_per_source":
-                            if s2_scored:
-                                matched_cands.append(s2_scored[0][0])
-                            if s3_scored:
-                                matched_cands.append(s3_scored[0][0])
-                        elif strategy == "top2_per_source":
-                            for item in s2_scored[:2]:
-                                matched_cands.append(item[0])
-                            for item in s3_scored[:2]:
-                                matched_cands.append(item[0])
-                        else:  # 'all_above_tau'
-                            for item in s2_scored:
-                                matched_cands.append(item[0])
-                            for item in s3_scored:
-                                matched_cands.append(item[0])
+                        for cid, p in zip(valid_cand_ids, probs):
+                            if cid.startswith("S2-"):
+                                if p >= tau_s2:
+                                    matched_cands.append(cid)
+                            else:
+                                if p >= tau_s3:
+                                    matched_cands.append(cid)
                 else:
                     for cid in cands_set:
                         cand_rec = target_batch.get(cid)

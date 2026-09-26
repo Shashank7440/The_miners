@@ -77,124 +77,89 @@ def tune_threshold(
     for (s1_id, cand_id, r_pos, r_neg), p in zip(pair_meta, probs):
         s1_scored[s1_id].append((cand_id, p, r_pos, r_neg))
 
-    # Grid search: thresholds from 0.30 to 0.95 with per-source selection strategies
-    thresholds = np.arange(0.30, 0.96, 0.02).tolist()
+    # 2D Grid Search: Independent tau_s2 and tau_s3 from 0.60 to 0.95 (0.01 step)
+    tau_range = np.arange(0.60, 0.96, 0.01).tolist()
     
-    print("\n" + "-" * 95, flush=True)
-    print(f"{'Mode':<18} | {'Tau':<6} | {'Macro F0.5':<12} | {'Singleton Acc':<14} | {'Matched F0.5':<12} | {'Total Preds':<10}", flush=True)
-    print("-" * 95, flush=True)
+    print("\n" + "=" * 80, flush=True)
+    print("INDEPENDENT THRESHOLD TUNING (tau_s2 vs tau_s3)", flush=True)
+    print("=" * 80, flush=True)
 
     best_score = -1.0
-    best_threshold = DEFAULT_F05_THRESHOLD
+    best_tau_s2 = 0.80
+    best_tau_s3 = 0.80
     best_metrics = None
-    best_strategy = "all_above_tau"
-    best_use_rules = False
 
-    # Strategies: 'top_dynamic', 'top1_per_source', 'top2_per_source', 'all_above_tau'
-    strategies = ["top_dynamic", "top1_per_source", "top2_per_source", "all_above_tau"]
+    for tau_s2 in np.arange(0.60, 0.96, 0.03):
+        for tau_s3 in np.arange(0.60, 0.96, 0.03):
+            preds = {}
+            for s1_id in val_s1_list:
+                cand_list = s1_scored.get(s1_id, [])
+                matched_ids = set()
 
-    for strat in strategies:
-        for use_rules in [False, True]:
-            rule_tag = "rules=OFF" if not use_rules else "rules=ON"
-            mode_name = f"{strat} ({rule_tag})"
-            local_best_score = -1.0
-            local_best_tau = DEFAULT_F05_THRESHOLD
+                for cand_id, p, r_pos, r_neg in cand_list:
+                    if cand_id.startswith("S2-"):
+                        if p >= tau_s2:
+                            matched_ids.add(cand_id)
+                    else:
+                        if p >= tau_s3:
+                            matched_ids.add(cand_id)
 
-            for tau in thresholds:
-                preds = {}
-                total_predicted = 0
+                preds[s1_id] = matched_ids
 
-                for s1_id in val_s1_list:
-                    cand_list = s1_scored.get(s1_id, [])
-                    matched_ids = set()
+            metrics = compute_macro_f05(ground_truth, preds, s1_entities=val_s1_list)
+            f05 = metrics["macro_f05"]
 
-                    # Separate by target source (S2 vs S3)
-                    s2_scored = []
-                    s3_scored = []
+            if f05 > best_score:
+                best_score = f05
+                best_tau_s2 = float(tau_s2)
+                best_tau_s3 = float(tau_s3)
+                best_metrics = metrics
 
-                    for cand_id, p, r_pos, r_neg in cand_list:
-                        eff_p = p
-                        if use_rules:
-                            if r_neg > 0:
-                                eff_p *= 0.60
-                            if r_pos > 0:
-                                eff_p = max(eff_p, 0.95)
+    # Refine grid around best tau_s2 and tau_s3
+    s2_fine = np.arange(max(0.60, best_tau_s2 - 0.04), min(0.96, best_tau_s2 + 0.05), 0.01).tolist()
+    s3_fine = np.arange(max(0.60, best_tau_s3 - 0.04), min(0.96, best_tau_s3 + 0.05), 0.01).tolist()
 
-                        if eff_p >= tau:
-                            if cand_id.startswith("S2-"):
-                                s2_scored.append((cand_id, eff_p))
-                            else:
-                                s3_scored.append((cand_id, eff_p))
+    for tau_s2 in s2_fine:
+        for tau_s3 in s3_fine:
+            preds = {}
+            for s1_id in val_s1_list:
+                cand_list = s1_scored.get(s1_id, [])
+                matched_ids = set()
 
-                    # Sort descending by probability
-                    s2_scored.sort(key=lambda x: x[1], reverse=True)
-                    s3_scored.sort(key=lambda x: x[1], reverse=True)
+                for cand_id, p, r_pos, r_neg in cand_list:
+                    if cand_id.startswith("S2-"):
+                        if p >= tau_s2:
+                            matched_ids.add(cand_id)
+                    else:
+                        if p >= tau_s3:
+                            matched_ids.add(cand_id)
 
-                    if strat == "top_dynamic":
-                        if s2_scored:
-                            top_p = s2_scored[0][1]
-                            for cid, p in s2_scored:
-                                if p >= top_p - 0.12:
-                                    matched_ids.add(cid)
-                        if s3_scored:
-                            top_p = s3_scored[0][1]
-                            for cid, p in s3_scored:
-                                if p >= top_p - 0.12:
-                                    matched_ids.add(cid)
-                    elif strat == "top1_per_source":
-                        if s2_scored:
-                            matched_ids.add(s2_scored[0][0])
-                        if s3_scored:
-                            matched_ids.add(s3_scored[0][0])
-                    elif strat == "top2_per_source":
-                        for item in s2_scored[:2]:
-                            matched_ids.add(item[0])
-                        for item in s3_scored[:2]:
-                            matched_ids.add(item[0])
-                    else:  # 'all_above_tau'
-                        for item in s2_scored:
-                            matched_ids.add(item[0])
-                        for item in s3_scored:
-                            matched_ids.add(item[0])
+                preds[s1_id] = matched_ids
 
-                    preds[s1_id] = matched_ids
-                    total_predicted += len(matched_ids)
+            metrics = compute_macro_f05(ground_truth, preds, s1_entities=val_s1_list)
+            f05 = metrics["macro_f05"]
 
-                metrics = compute_macro_f05(ground_truth, preds, s1_entities=val_s1_list)
-                f05 = metrics["macro_f05"]
-                s_acc = metrics["singleton_accuracy"]
-                m_f05 = metrics["matched_macro_f05"]
+            if f05 > best_score:
+                best_score = f05
+                best_tau_s2 = float(tau_s2)
+                best_tau_s3 = float(tau_s3)
+                best_metrics = metrics
 
-                if f05 > local_best_score:
-                    local_best_score = f05
-                    local_best_tau = tau
-
-                if f05 > best_score:
-                    best_score = f05
-                    best_threshold = tau
-                    best_metrics = metrics
-                    best_use_rules = use_rules
-                    best_strategy = strat
-
-            print(f"{mode_name:<18} | Best tau={local_best_tau:.2f} | F0.5={local_best_score:.4f}", flush=True)
-
-    print("-" * 95, flush=True)
-    print(f"\nOptimal Decision Threshold for Macro F_0.5: {best_threshold:.2f}", flush=True)
-    print(f"Optimal Candidate Selection Strategy: {best_strategy}", flush=True)
-    print(f"Best Validation Macro F_0.5 Score: {best_score:.4f}", flush=True)
-    print(f"Rules active: {best_use_rules}", flush=True)
+    print(f"Optimal Source 2 Threshold (tau_s2): {best_tau_s2:.2f}", flush=True)
+    print(f"Optimal Source 3 Threshold (tau_s3): {best_tau_s3:.2f}", flush=True)
+    print(f"Honest Validation Macro F_0.5 Score: {best_score:.4f}", flush=True)
     print(f"Singleton Accuracy at best threshold: {best_metrics['singleton_accuracy']*100:.2f}%", flush=True)
     print(f"Matched Macro F_0.5 at best threshold: {best_metrics['matched_macro_f05']:.4f}", flush=True)
 
     config = {
-        "best_threshold": best_threshold,
-        "best_strategy": best_strategy,
+        "best_threshold_s2": best_tau_s2,
+        "best_threshold_s3": best_tau_s3,
+        "best_threshold": (best_tau_s2 + best_tau_s3) / 2.0,
+        "best_strategy": "all_above_tau",
         "best_macro_f05": best_score,
         "singleton_accuracy": best_metrics["singleton_accuracy"],
         "matched_macro_f05": best_metrics["matched_macro_f05"],
-        "use_rules": best_use_rules,
-        "rule_conflict_discount": 0.60,
-        "rule_positive_boost": 0.95
+        "use_rules": False
     }
 
     with open(output_config_path, "w", encoding="utf-8") as f:

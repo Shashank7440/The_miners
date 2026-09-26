@@ -106,11 +106,12 @@ def train_matching_model(
         needed_target_ids.update(gt.get(s1_id, set()))
     print(f"Target match IDs needed for training/validation: {len(needed_target_ids):,}", flush=True)
 
-    blocker = MultiPassBlocker()
+    blocker_s2 = MultiPassBlocker(max_candidates_per_s1=50)
+    blocker_s3 = MultiPassBlocker(max_candidates_per_s1=50)
     target_records = {}
 
-    print("Indexing and caching target records ...", flush=True)
-    for fname in ["train_source2.tsv", "train_source3.tsv"]:
+    print("Indexing target records into separate Source 2 and Source 3 blockers ...", flush=True)
+    for fname, blocker_inst in [("train_source2.tsv", blocker_s2), ("train_source3.tsv", blocker_s3)]:
         path = train_dir / fname
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             reader = csv.reader(f, delimiter="\t")
@@ -139,7 +140,7 @@ def train_matching_model(
                     }
                     norm = normalize_record(rec)
                     target_records[eid] = norm
-                    blocker._index_single_record(norm)
+                    blocker_inst._index_single_record(norm)
 
         print(f"Loaded records from {fname} (total target cache size: {len(target_records):,}).", flush=True)
 
@@ -147,6 +148,7 @@ def train_matching_model(
     X_train, y_train = [], []
     X_val, y_val = [], []
     val_pairs_by_s1 = defaultdict(list)
+    val_candidate_ids_by_s1 = {}
 
     processed = 0
     for s1_id in selected_s1:
@@ -155,13 +157,18 @@ def train_matching_model(
             continue
         
         true_matches = gt.get(s1_id, set())
-        candidates = blocker.retrieve_candidates_for_s1(s1_rec)
+        cands_s2 = blocker_s2.retrieve_candidates_for_s1(s1_rec)
+        cands_s3 = blocker_s3.retrieve_candidates_for_s1(s1_rec)
+        retrieved_cands = set(cands_s2) | set(cands_s3)
         is_train = s1_id in train_s1_set
 
-        all_eval_cands = list(candidates)
-        for tm in true_matches:
-            if tm in target_records and tm not in all_eval_cands:
-                all_eval_cands.append(tm)
+        if is_train:
+            # Training set: ensure classifier sees positive examples
+            all_eval_cands = list(retrieved_cands | true_matches)
+        else:
+            # Honest Validation set: NO true match injection! Missing true matches stay missing.
+            all_eval_cands = list(retrieved_cands)
+            val_candidate_ids_by_s1[s1_id] = retrieved_cands
 
         for rank, cand_id in enumerate(all_eval_cands, 1):
             cand_rec = target_records.get(cand_id)
@@ -183,6 +190,67 @@ def train_matching_model(
         processed += 1
         if processed % 50_000 == 0:
             print(f"  Processed {processed:,} S1 entities ...", flush=True)
+
+    # Calculate Honest Candidate Recall & Blocking Ceiling metrics
+    print("\n" + "=" * 60, flush=True)
+    print("HONEST CANDIDATE RECALL & BLOCKING CEILING AUDIT", flush=True)
+    print("=" * 60, flush=True)
+
+    val_gt = {s1: gt[s1] for s1 in s1_val}
+    val_matched_gt = {s1: mids for s1, mids in val_gt.items() if mids}
+
+    # Overall candidate recall
+    total_hits = 0
+    total_true = 0
+    macro_recalls = []
+
+    # Per-source recall
+    s2_hits, s2_true = 0, 0
+    s3_hits, s3_true = 0, 0
+
+    # Per-country recall
+    country_hits = defaultdict(int)
+    country_true = defaultdict(int)
+
+    for s1_id, true_ids in val_matched_gt.items():
+        ret_cands = val_candidate_ids_by_s1.get(s1_id, set())
+        hits = true_ids & ret_cands
+        
+        total_hits += len(hits)
+        total_true += len(true_ids)
+        macro_recalls.append(len(hits) / max(len(true_ids), 1))
+
+        s1_c = s1_records.get(s1_id, {}).get("country", "Other")
+        country_hits[s1_c] += len(hits)
+        country_true[s1_c] += len(true_ids)
+
+        s2_t = {m for m in true_ids if m.startswith("S2-")}
+        s3_t = {m for m in true_ids if m.startswith("S3-")}
+
+        s2_hits += len(s2_t & ret_cands)
+        s2_true += len(s2_t)
+        s3_hits += len(s3_t & ret_cands)
+        s3_true += len(s3_t)
+
+    micro_recall = total_hits / max(total_true, 1)
+    macro_recall = sum(macro_recalls) / max(len(macro_recalls), 1)
+
+    print(f"Overall Candidate Micro Recall: {micro_recall*100:.2f}% ({total_hits:,} / {total_true:,})")
+    print(f"Overall Candidate Macro Recall: {macro_recall*100:.2f}%")
+    print(f"  - Source 2 Candidate Micro Recall: {s2_hits / max(s2_true, 1)*100:.2f}% ({s2_hits:,} / {s2_true:,})")
+    print(f"  - Source 3 Candidate Micro Recall: {s3_hits / max(s3_true, 1)*100:.2f}% ({s3_hits:,} / {s3_true:,})")
+    for cnt in ["US", "India"]:
+        if country_true[cnt] > 0:
+            print(f"  - {cnt} Candidate Micro Recall: {country_hits[cnt] / country_true[cnt]*100:.2f}% ({country_hits[cnt]:,} / {country_true[cnt]:,})")
+
+    # Blocking ceiling calculation
+    ceiling_predictions = {
+        s1_id: val_gt.get(s1_id, set()) & val_candidate_ids_by_s1.get(s1_id, set())
+        for s1_id in s1_val
+    }
+    ceiling_metrics = compute_macro_f05(val_gt, ceiling_predictions, s1_entities=s1_val)
+    print(f"\nBLOCKING CEILING (Maximum Possible Macro F0.5): {ceiling_metrics['macro_f05']:.4f}")
+    print("=" * 60 + "\n", flush=True)
 
     X_train = np.array(X_train, dtype=np.float32)
     y_train = np.array(y_train, dtype=np.int32)

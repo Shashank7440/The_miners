@@ -16,6 +16,11 @@ from config import MAX_CANDIDATES_PER_S1
 from normalize import normalize_record, NAME_STOPWORDS, remove_accents, get_char_trigrams
 
 
+def get_initialism(tokens: List[str], stopwords: Set[str]) -> str:
+    useful = [t for t in tokens if t and t not in stopwords and not t.isdigit()]
+    return "".join(t[0] for t in useful)
+
+
 class MultiPassBlocker:
     """Memory-efficient multi-pass inverted index blocker."""
 
@@ -30,10 +35,11 @@ class MultiPassBlocker:
         self.index_address_anchor = defaultdict(lambda: defaultdict(list))
         self.index_postal_anchor = defaultdict(lambda: defaultdict(list))
 
-        # NEW blocking indices for 95%+ recall
+        # NEW blocking indices for 95%+ recall & initialisms
         self.index_no_accent_name = defaultdict(lambda: defaultdict(list))
         self.index_first_token_city = defaultdict(lambda: defaultdict(list))
         self.index_postal_name = defaultdict(lambda: defaultdict(list))
+        self.index_initialism = defaultdict(lambda: defaultdict(list))
 
         self.token_freq = defaultdict(Counter)
 
@@ -109,6 +115,11 @@ class MultiPassBlocker:
             if len(ft) >= 3:
                 self.index_first_token_city[c][f"{ft}_{city}"].append(eid)
 
+        # Initialism indexing (e.g. HDFC, SBI)
+        init_key = get_initialism(name_tokens, NAME_STOPWORDS)
+        if len(init_key) >= 2:
+            self.index_initialism[c][init_key].append(eid)
+
         for t in name_tokens:
             if len(t) >= 3 and t not in NAME_STOPWORDS and not t.isdigit():
                 self.token_freq[c][t] += 1
@@ -145,52 +156,60 @@ class MultiPassBlocker:
         """Retrieve candidate IDs for a single Source 1 record."""
         c = s1_norm["country"]
         candidate_scores = defaultdict(int)
+        strong_candidates = set()
 
         name_norm = s1_norm["name_normalized"]
         no_suf = s1_norm["name_without_legal_suffix"]
         sorted_name = s1_norm["name_sorted_tokens"]
         comp_name = self._get_compressed_name(no_suf)
+        b_nums = s1_norm.get("building_numbers", [])
+        p_tokens = s1_norm.get("postal_tokens", [])
+        a_tokens = s1_norm.get("address_tokens", [])
+        name_tokens = s1_norm.get("name_tokens", [])
 
         # Pass 1: Exact normalized name
         if name_norm and name_norm in self.index_exact_name[c]:
             for cid in self.index_exact_name[c][name_norm]:
-                candidate_scores[cid] += 15
+                candidate_scores[cid] += 20
+                if p_tokens or b_nums:
+                    strong_candidates.add(cid)
 
         # Pass 2: Legal suffix-stripped name
         if no_suf and no_suf in self.index_no_suffix_name[c]:
             for cid in self.index_no_suffix_name[c][no_suf]:
-                candidate_scores[cid] += 10
+                candidate_scores[cid] += 15
 
         # Pass 3: Sorted token name
         if sorted_name and sorted_name in self.index_sorted_name[c]:
             for cid in self.index_sorted_name[c][sorted_name]:
-                candidate_scores[cid] += 8
+                candidate_scores[cid] += 12
 
         # Pass 4: Compressed name (whitespace-insensitive)
-        if len(comp_name) >= 6 and comp_name in self.index_compressed_name[c]:
+        if len(comp_name) >= 5 and comp_name in self.index_compressed_name[c]:
             for cid in self.index_compressed_name[c][comp_name]:
-                candidate_scores[cid] += 7
+                candidate_scores[cid] += 10
 
         # Pass 5: Accent-stripped name (French entities)
         no_accent = s1_norm.get("name_no_accent", "")
         if no_accent and no_accent in self.index_no_accent_name[c]:
             for cid in self.index_no_accent_name[c][no_accent]:
+                candidate_scores[cid] += 10
+
+        # Pass 6: Initialisms (e.g. HDFC, SBI)
+        init_key = get_initialism(name_tokens, NAME_STOPWORDS)
+        if len(init_key) >= 2 and init_key in self.index_initialism[c]:
+            for cid in self.index_initialism[c][init_key]:
                 candidate_scores[cid] += 8
 
-        # Pass 6: Distinctive low-frequency name tokens
-        for tok in s1_norm.get("name_tokens", []):
+        # Pass 7: Distinctive low-frequency name tokens
+        for tok in name_tokens:
             if len(tok) >= 3 and tok not in NAME_STOPWORDS and tok in self.index_name_tokens[c]:
                 freq = self.token_freq[c][tok]
                 weight = 10 if freq < 50 else (5 if freq < 200 else 2)
                 for cid in self.index_name_tokens[c][tok]:
                     candidate_scores[cid] += weight
 
-        # Pass 7: Address anchor (building_number + street keyword)
-        b_nums = s1_norm.get("building_numbers", [])
-        a_tokens = s1_norm.get("address_tokens", [])
-        p_tokens = s1_norm.get("postal_tokens", [])
-        name_tokens = s1_norm.get("name_tokens", [])
-
+        # Pass 8: Address anchor (building_number + street keyword)
         if b_nums and a_tokens:
             b = b_nums[0]
             for tok in a_tokens:
@@ -200,14 +219,14 @@ class MultiPassBlocker:
                         for cid in self.index_address_anchor[c][anchor_key]:
                             candidate_scores[cid] += 12
 
-        # Pass 8: Postal anchor (postal_code + building_number)
+        # Pass 9: Postal anchor (postal_code + building_number)
         if p_tokens and b_nums:
             post_anchor = f"{p_tokens[0]}_{b_nums[0]}"
             if post_anchor in self.index_postal_anchor[c]:
                 for cid in self.index_postal_anchor[c][post_anchor]:
                     candidate_scores[cid] += 15
 
-        # Pass 9: Postal code + name token (high recall for street variations)
+        # Pass 10: Postal code + name token
         if p_tokens and name_tokens:
             for t in name_tokens:
                 if t not in NAME_STOPWORDS and len(t) >= 3:
@@ -216,7 +235,7 @@ class MultiPassBlocker:
                         for cid in self.index_postal_name[c][key]:
                             candidate_scores[cid] += 10
 
-        # Pass 10: First-name-token + city
+        # Pass 11: First-name-token + city
         city = self._get_city_token(a_tokens)
         if name_tokens and city:
             ft = name_tokens[0]
@@ -229,5 +248,14 @@ class MultiPassBlocker:
         if not candidate_scores:
             return []
 
-        sorted_cands = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)
-        return [cid for cid, _ in sorted_cands[:self.max_candidates]]
+        # Strong candidate protection: Keep strong candidates, then fill remaining slots with top fuzzy candidates
+        remaining_slots = max(0, self.max_candidates - len(strong_candidates))
+        fuzzy_sorted = sorted(
+            [(cid, sc) for cid, sc in candidate_scores.items() if cid not in strong_candidates],
+            key=lambda x: x[1],
+            reverse=True
+        )[:remaining_slots]
+
+        result_cands = list(strong_candidates)
+        result_cands.extend(cid for cid, _ in fuzzy_sorted)
+        return result_cands

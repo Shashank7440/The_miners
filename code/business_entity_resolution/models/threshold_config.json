@@ -1,10 +1,10 @@
 {
-  "best_threshold": 0.70,
-  "best_strategy": "top_dynamic",
-  "best_macro_f05": 0.9689,
+  "best_threshold_s2": 0.80,
+  "best_threshold_s3": 0.80,
+  "best_threshold": 0.80,
+  "best_strategy": "all_above_tau",
+  "best_macro_f05": 0.9750,
   "singleton_accuracy": 0.8852,
   "matched_macro_f05": 0.9739,
-  "use_rules": false,
-  "rule_conflict_discount": 0.6,
-  "rule_positive_boost": 0.95
+  "use_rules": false
 }
