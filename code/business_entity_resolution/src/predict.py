@@ -283,6 +283,7 @@ def run_test_prediction(
                     continue
 
                 matched_cands_with_probs = []
+                target_batch = store.get_records_batch(cands_set)
 
                 if clf is not None:
                     feat_matrix = []
