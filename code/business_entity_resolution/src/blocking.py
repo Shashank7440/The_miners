@@ -13,6 +13,7 @@ from typing import Dict, List, Set, Tuple, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from normalize import normalize_record, NAME_STOPWORDS, remove_accents, get_char_trigrams, get_char_bigrams
+from config import MAX_CANDIDATES_PER_S1
 
 
 def get_initialism(tokens: List[str], stopwords: Set[str]) -> str:
