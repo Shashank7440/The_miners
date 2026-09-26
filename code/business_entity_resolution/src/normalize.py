@@ -142,6 +142,16 @@ def get_char_trigrams(text: str, n: int = 3) -> set:
     return {text[i:i+n] for i in range(len(text) - n + 1)}
 
 
+def get_char_bigrams(text: str) -> set:
+    """Get character bigram set from a string (spaces removed)."""
+    if not text:
+        return set()
+    text = text.replace(" ", "")
+    if len(text) < 2:
+        return set()
+    return {text[i:i+2] for i in range(len(text) - 1)}
+
+
 def normalize_business_name(name: Optional[str]) -> Dict[str, any]:
     """Generate multiple normalized views of a business name."""
     norm = normalize_text(name)

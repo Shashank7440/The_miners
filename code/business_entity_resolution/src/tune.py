@@ -77,20 +77,20 @@ def tune_threshold(
     for (s1_id, cand_id, r_pos, r_neg), p in zip(pair_meta, probs):
         s1_scored[s1_id].append((cand_id, p, r_pos, r_neg))
 
-    # 2D Grid Search: Independent tau_s2 and tau_s3 from 0.60 to 0.95 (0.01 step)
-    tau_range = np.arange(0.60, 0.96, 0.01).tolist()
+    # 2D Grid Search: Independent tau_s2 and tau_s3 from 0.50 to 0.95 (0.01 step)
+    tau_range = np.arange(0.50, 0.96, 0.01).tolist()
     
     print("\n" + "=" * 80, flush=True)
     print("INDEPENDENT THRESHOLD TUNING (tau_s2 vs tau_s3)", flush=True)
     print("=" * 80, flush=True)
 
     best_score = -1.0
-    best_tau_s2 = 0.80
-    best_tau_s3 = 0.80
+    best_tau_s2 = 0.70
+    best_tau_s3 = 0.70
     best_metrics = None
 
-    for tau_s2 in np.arange(0.60, 0.96, 0.03):
-        for tau_s3 in np.arange(0.60, 0.96, 0.03):
+    for tau_s2 in np.arange(0.50, 0.96, 0.03):
+        for tau_s3 in np.arange(0.50, 0.96, 0.03):
             preds = {}
             for s1_id in val_s1_list:
                 cand_list = s1_scored.get(s1_id, [])
@@ -116,8 +116,8 @@ def tune_threshold(
                 best_metrics = metrics
 
     # Refine grid around best tau_s2 and tau_s3
-    s2_fine = np.arange(max(0.60, best_tau_s2 - 0.04), min(0.96, best_tau_s2 + 0.05), 0.01).tolist()
-    s3_fine = np.arange(max(0.60, best_tau_s3 - 0.04), min(0.96, best_tau_s3 + 0.05), 0.01).tolist()
+    s2_fine = np.arange(max(0.50, best_tau_s2 - 0.04), min(0.96, best_tau_s2 + 0.05), 0.01).tolist()
+    s3_fine = np.arange(max(0.50, best_tau_s3 - 0.04), min(0.96, best_tau_s3 + 0.05), 0.01).tolist()
 
     for tau_s2 in s2_fine:
         for tau_s3 in s3_fine:

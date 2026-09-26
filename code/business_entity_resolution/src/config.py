@@ -36,7 +36,7 @@ DEFAULT_WORKERS = max(1, os.cpu_count() or 4)
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 100_000))
 
 # Blocking parameters
-MAX_CANDIDATES_PER_S1 = 80          # set to 80 to achieve 95%+ candidate retrieval recall
+MAX_CANDIDATES_PER_S1 = 100         # set to 100 per source for maximum candidate retrieval recall
 MIN_POSTAL_LEN = 3
 
 # Model hyperparameters

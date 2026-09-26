@@ -12,8 +12,7 @@ from collections import defaultdict, Counter
 from typing import Dict, List, Set, Tuple, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from config import MAX_CANDIDATES_PER_S1
-from normalize import normalize_record, NAME_STOPWORDS, remove_accents, get_char_trigrams
+from normalize import normalize_record, NAME_STOPWORDS, remove_accents, get_char_trigrams, get_char_bigrams
 
 
 def get_initialism(tokens: List[str], stopwords: Set[str]) -> str:
@@ -35,11 +34,12 @@ class MultiPassBlocker:
         self.index_address_anchor = defaultdict(lambda: defaultdict(list))
         self.index_postal_anchor = defaultdict(lambda: defaultdict(list))
 
-        # NEW blocking indices for 95%+ recall & initialisms
+        # NEW blocking indices for 95%+ recall, initialisms & short name bigrams
         self.index_no_accent_name = defaultdict(lambda: defaultdict(list))
         self.index_first_token_city = defaultdict(lambda: defaultdict(list))
         self.index_postal_name = defaultdict(lambda: defaultdict(list))
         self.index_initialism = defaultdict(lambda: defaultdict(list))
+        self.index_bigram = defaultdict(lambda: defaultdict(list))
 
         self.token_freq = defaultdict(Counter)
 
@@ -80,6 +80,11 @@ class MultiPassBlocker:
             comp = self._get_compressed_name(no_suf)
             if len(comp) >= 5:
                 self.index_compressed_name[c][comp].append(eid)
+
+            # Character bigram index for short names (KFC, IBM, SBI, TCS)
+            if len(comp) <= 6:
+                for bg in get_char_bigrams(comp):
+                    self.index_bigram[c][bg].append(eid)
 
             # Accent-stripped name index (helps French entities)
             no_accent = norm.get("name_no_accent", "")
@@ -167,17 +172,17 @@ class MultiPassBlocker:
         a_tokens = s1_norm.get("address_tokens", [])
         name_tokens = s1_norm.get("name_tokens", [])
 
-        # Pass 1: Exact normalized name
+        # Pass 1: Exact normalized name — ALWAYS protect from cap
         if name_norm and name_norm in self.index_exact_name[c]:
             for cid in self.index_exact_name[c][name_norm]:
                 candidate_scores[cid] += 20
-                if p_tokens or b_nums:
-                    strong_candidates.add(cid)
+                strong_candidates.add(cid)
 
-        # Pass 2: Legal suffix-stripped name
+        # Pass 2: Legal suffix-stripped name — also protect from cap
         if no_suf and no_suf in self.index_no_suffix_name[c]:
             for cid in self.index_no_suffix_name[c][no_suf]:
                 candidate_scores[cid] += 15
+                strong_candidates.add(cid)
 
         # Pass 3: Sorted token name
         if sorted_name and sorted_name in self.index_sorted_name[c]:
@@ -188,6 +193,13 @@ class MultiPassBlocker:
         if len(comp_name) >= 5 and comp_name in self.index_compressed_name[c]:
             for cid in self.index_compressed_name[c][comp_name]:
                 candidate_scores[cid] += 10
+
+        # Character bigram pass for short names (KFC, IBM, SBI, TCS)
+        if len(comp_name) <= 6:
+            for bg in get_char_bigrams(comp_name):
+                if bg in self.index_bigram[c]:
+                    for cid in self.index_bigram[c][bg]:
+                        candidate_scores[cid] += 3
 
         # Pass 5: Accent-stripped name (French entities)
         no_accent = s1_norm.get("name_no_accent", "")

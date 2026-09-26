@@ -11,7 +11,7 @@ from rapidfuzz.distance import JaroWinkler
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from normalize import NAME_STOPWORDS, remove_accents, get_initialism, get_char_trigrams
+from normalize import NAME_STOPWORDS, remove_accents, get_initialism, get_char_trigrams, get_char_bigrams
 
 
 def compute_jaccard(tokens1: List[str], tokens2: List[str]) -> float:
@@ -38,6 +38,17 @@ def trigram_dice(s1: str, s2: str, n: int = 3) -> float:
         return 0.0
     g1 = get_char_trigrams(s1, n)
     g2 = get_char_trigrams(s2, n)
+    if not g1 or not g2:
+        return 0.0
+    return 2.0 * len(g1 & g2) / (len(g1) + len(g2))
+
+
+def bigram_dice(s1: str, s2: str) -> float:
+    """Dice coefficient on character bigrams (spaces removed)."""
+    if not s1 or not s2:
+        return 0.0
+    g1 = get_char_bigrams(s1)
+    g2 = get_char_bigrams(s2)
     if not g1 or not g2:
         return 0.0
     return 2.0 * len(g1 & g2) / (len(g1) + len(g2))
@@ -93,8 +104,9 @@ def extract_pairwise_features(s1: Dict[str, Any], cand: Dict[str, Any], blocking
     # NEW: Jaro-Winkler similarity (good for short strings/typos)
     feats["name_jaro_winkler"] = JaroWinkler.similarity(n1, n2) if n1 and n2 else 0.0
     
-    # NEW: Character trigram Dice coefficient
+    # NEW: Character trigram & bigram Dice coefficient
     feats["name_trigram_dice"] = trigram_dice(ns1, ns2)
+    feats["name_bigram_dice"] = bigram_dice(ns1.replace(" ", ""), ns2.replace(" ", ""))
 
     # NEW: Name length ratio (catches abbreviation vs full name)
     feats["name_length_ratio"] = min(len(n1), len(n2)) / max(len(n1), len(n2), 1) if n1 and n2 else 0.0
@@ -188,6 +200,7 @@ FEATURE_NAMES = [
     # NEW features
     "name_jaro_winkler",
     "name_trigram_dice",
+    "name_bigram_dice",
     "name_length_ratio",
     "name_token_count_ratio",
     "name_initialism_match",

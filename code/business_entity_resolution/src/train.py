@@ -18,7 +18,7 @@ import lightgbm as lgb
 from sklearn.model_selection import train_test_split
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from config import TRAIN_DIR, MODELS_DIR, RANDOM_STATE
+from config import TRAIN_DIR, MODELS_DIR, RANDOM_STATE, MAX_CANDIDATES_PER_S1
 from normalize import normalize_record
 from blocking import MultiPassBlocker
 from features import extract_pairwise_features, FEATURE_NAMES
@@ -106,8 +106,8 @@ def train_matching_model(
         needed_target_ids.update(gt.get(s1_id, set()))
     print(f"Target match IDs needed for training/validation: {len(needed_target_ids):,}", flush=True)
 
-    blocker_s2 = MultiPassBlocker(max_candidates_per_s1=50)
-    blocker_s3 = MultiPassBlocker(max_candidates_per_s1=50)
+    blocker_s2 = MultiPassBlocker(max_candidates_per_s1=MAX_CANDIDATES_PER_S1)
+    blocker_s3 = MultiPassBlocker(max_candidates_per_s1=MAX_CANDIDATES_PER_S1)
     target_records = {}
 
     print("Indexing target records into separate Source 2 and Source 3 blockers ...", flush=True)
