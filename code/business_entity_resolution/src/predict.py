@@ -23,7 +23,9 @@ from typing import Dict, List, Set, Tuple, Any
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from config import TEST_DIR, OUTPUT_DIR, MODELS_DIR, MATCHING_OUTPUT, CANDIDATE_OUTPUT, DEFAULT_F05_THRESHOLD
+from config import TEST_DIR, OUTPUT_DIR, MODELS_DIR, MATCHING_OUTPUT, CANDIDATE_OUTPUT, DEFAULT_F05_THRESHOLD, MAX_CANDIDATES_PER_S1
+
+
 from normalize import normalize_record
 from blocking import MultiPassBlocker
 from features import extract_pairwise_features, FEATURE_NAMES
@@ -199,8 +201,8 @@ def run_test_prediction(
         print(f"Processing Country Partition: {country} ({country_counts[country]:,} entities)", flush=True)
         print(f"==================================================", flush=True)
 
-        blocker_s2 = MultiPassBlocker(max_candidates_per_s1=50)
-        blocker_s3 = MultiPassBlocker(max_candidates_per_s1=50)
+        blocker_s2 = MultiPassBlocker(max_candidates_per_s1=MAX_CANDIDATES_PER_S1)
+        blocker_s3 = MultiPassBlocker(max_candidates_per_s1=MAX_CANDIDATES_PER_S1)
         store = RecordStore(in_memory=in_memory, db_path=tmp_dir / f"store_{country}.db")
 
         # Index target records into separate blockers
@@ -314,12 +316,12 @@ def run_test_prediction(
                             matched_cands_with_probs.append((cid, 1.0))
 
                 # Confidence-based post-filter for hub entities:
-                # If too many matches and none are high-confidence, keep only top by probability
-                if len(matched_cands_with_probs) > 8:
+                # If too many matches and none are high-confidence, keep top by probability
+                if len(matched_cands_with_probs) > 15:
                     max_prob = max(p for _, p in matched_cands_with_probs)
-                    if max_prob < 0.75:
+                    if max_prob < 0.70:
                         matched_cands_with_probs.sort(key=lambda x: x[1], reverse=True)
-                        matched_cands_with_probs = matched_cands_with_probs[:5]
+                        matched_cands_with_probs = matched_cands_with_probs[:10]
 
                 matched_cands = [cid for cid, _ in matched_cands_with_probs]
 
@@ -337,7 +339,7 @@ def run_test_prediction(
                     print(f"  Processed {c_s1_done:,} / {country_counts[country]:,} {country} entities ({c_matches_done:,} matches) ...", flush=True)
 
         store.close()
-        del blocker
+        del blocker_s2, blocker_s3
         del store
         gc.collect()
         print(f"Completed Country Partition '{country}': {c_s1_done:,} entities, {c_matches_done:,} matches.", flush=True)
